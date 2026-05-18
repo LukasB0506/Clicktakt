@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clicktakt – Takteinteilung für Teams</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;600&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #0C0C0C;
+    --bg2:     #141414;
+    --bg3:     #1E1E1E;
+    --red:     #D5001C;
+    --red2:    #FF1A33;
+    --gold:    #C9A84C;
+    --white:   #F5F5F0;
+    --dim:     #666;
+    --border:  #2A2A2A;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--white);
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Noise Overlay ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.6;
+  }
+
+  /* ── Nav ── */
+  nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 48px;
+    border-bottom: 1px solid transparent;
+    transition: all 0.4s;
+    backdrop-filter: blur(0px);
+  }
+  nav.scrolled {
+    border-bottom-color: var(--border);
+    backdrop-filter: blur(20px);
+    background: rgba(12,12,12,0.8);
+  }
+  .nav-brand {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 1.4rem;
+    font-weight: 300;
+    letter-spacing: 6px;
+    color: var(--white);
+    text-decoration: none;
+  }
+  .nav-brand span { color: var(--red); }
+  .nav-links { display: flex; gap: 36px; list-style: none; }
+  .nav-links a {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 2px;
+    color: var(--dim);
+    text-decoration: none;
+    text-transform: uppercase;
+    transition: color 0.2s;
+  }
+  .nav-links a:hover { color: var(--white); }
+
+  /* ── Hero ── */
+  .hero {
+    position: relative;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 120px 48px 80px;
+    z-index: 1;
+  }
+
+  /* Hintergrundraster */
+  .hero::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 80px 80px;
+    mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 20%, transparent 100%);
+    opacity: 0.4;
+    z-index: -1;
+  }
+
+  .hero-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 4px;
+    color: var(--red);
+    text-transform: uppercase;
+    margin-bottom: 24px;
+    opacity: 0;
+    animation: fadeUp 0.8s 0.2s forwards;
+  }
+
+  .hero-title {
+    font-size: clamp(4rem, 12vw, 9rem);
+    font-weight: 300;
+    letter-spacing: 16px;
+    line-height: 1;
+    margin-bottom: 32px;
+    opacity: 0;
+    animation: fadeUp 0.8s 0.4s forwards;
+  }
+  .hero-title span {
+    display: block;
+    font-weight: 600;
+    color: var(--red);
+    letter-spacing: 18px;
+  }
+
+  .hero-sub {
+    font-size: 1.1rem;
+    font-weight: 300;
+    color: var(--dim);
+    letter-spacing: 2px;
+    max-width: 480px;
+    line-height: 1.8;
+    margin-bottom: 56px;
+    opacity: 0;
+    animation: fadeUp 0.8s 0.6s forwards;
+  }
+
+  .hero-actions {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    opacity: 0;
+    animation: fadeUp 0.8s 0.8s forwards;
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--red);
+    color: white;
+    padding: 16px 36px;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.75rem;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    transition: all 0.3s;
+    position: relative;
+    overflow: hidden;
+  }
+  .btn-primary::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--red2);
+    transform: translateX(-100%);
+    transition: transform 0.3s;
+  }
+  .btn-primary:hover::before { transform: translateX(0); }
+  .btn-primary span { position: relative; z-index: 1; }
+
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: transparent;
+    color: var(--dim);
+    padding: 16px 36px;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.75rem;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    text-decoration: none;
+    border: 1px solid var(--border);
+    transition: all 0.3s;
+  }
+  .btn-secondary:hover { color: var(--white); border-color: var(--white); }
+
+  /* Versionsbadge */
+  .version-badge {
+    position: absolute;
+    bottom: 48px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: 'DM Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 3px;
+    color: var(--dim);
+    text-transform: uppercase;
+    opacity: 0;
+    animation: fadeUp 0.8s 1s forwards;
+  }
+  .version-badge::before {
+    content: '';
+    display: inline-block;
+    width: 6px; height: 6px;
+    background: var(--red);
+    border-radius: 50%;
+    margin-right: 8px;
+    vertical-align: middle;
+    animation: pulse 2s infinite;
+  }
+
+  /* ── Features ── */
+  .features {
+    position: relative;
+    z-index: 1;
+    padding: 120px 48px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .section-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 4px;
+    color: var(--red);
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+  .section-title {
+    font-size: clamp(2rem, 4vw, 3.5rem);
+    font-weight: 300;
+    letter-spacing: 4px;
+    margin-bottom: 80px;
+    color: var(--white);
+  }
+  .section-title strong { font-weight: 600; }
+
+  .features-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+  }
+  .feature-card {
+    background: var(--bg2);
+    padding: 40px 32px;
+    border: 1px solid var(--border);
+    transition: all 0.3s;
+    position: relative;
+    overflow: hidden;
+  }
+  .feature-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 2px;
+    background: var(--red);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.4s;
+  }
+  .feature-card:hover { background: var(--bg3); }
+  .feature-card:hover::before { transform: scaleX(1); }
+
+  .feature-num {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 2px;
+    color: var(--red);
+    margin-bottom: 20px;
+    display: block;
+  }
+  .feature-title {
+    font-size: 1.3rem;
+    font-weight: 400;
+    letter-spacing: 2px;
+    margin-bottom: 14px;
+    color: var(--white);
+  }
+  .feature-desc {
+    font-size: 0.95rem;
+    color: var(--dim);
+    line-height: 1.8;
+    font-weight: 300;
+  }
+
+  /* ── Requirements ── */
+  .requirements {
+    position: relative;
+    z-index: 1;
+    padding: 80px 48px 120px;
+    max-width: 1100px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 80px;
+    align-items: start;
+  }
+  .req-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 32px;
+  }
+  .req-list li {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 1rem;
+    color: var(--dim);
+    font-weight: 300;
+    letter-spacing: 1px;
+  }
+  .req-list li::before {
+    content: '—';
+    color: var(--red);
+    font-family: 'DM Mono', monospace;
+    flex-shrink: 0;
+  }
+
+  .install-steps {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-top: 32px;
+    counter-reset: steps;
+  }
+  .install-step {
+    display: flex;
+    gap: 20px;
+    padding: 20px 0;
+    border-bottom: 1px solid var(--border);
+    counter-increment: steps;
+  }
+  .install-step:last-child { border-bottom: none; }
+  .step-num {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    color: var(--red);
+    letter-spacing: 2px;
+    flex-shrink: 0;
+    padding-top: 3px;
+  }
+  .step-text {
+    font-size: 0.95rem;
+    color: var(--dim);
+    line-height: 1.7;
+    font-weight: 300;
+  }
+  .step-text strong { color: var(--white); font-weight: 400; }
+
+  /* ── Footer ── */
+  footer {
+    position: relative;
+    z-index: 1;
+    border-top: 1px solid var(--border);
+    padding: 40px 48px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  footer p {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 2px;
+    color: var(--dim);
+    text-transform: uppercase;
+  }
+  footer span { color: var(--red); }
+
+  /* ── Animationen ── */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.3; }
+  }
+
+  /* ── Scroll Animation ── */
+  .reveal {
+    opacity: 0;
+    transform: translateY(32px);
+    transition: all 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .reveal.visible { opacity: 1; transform: translateY(0); }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    nav { padding: 16px 24px; }
+    .nav-links { display: none; }
+    .hero { padding: 100px 24px 60px; }
+    .features, .requirements { padding: 60px 24px; }
+    .features-grid { grid-template-columns: 1fr; }
+    .requirements { grid-template-columns: 1fr; gap: 48px; }
+    footer { flex-direction: column; gap: 12px; text-align: center; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav id="nav">
+  <a href="#" class="nav-brand">Click<span>takt</span></a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#install">Installation</a></li>
+    <li><a href="#download">Download</a></li>
+  </ul>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <p class="hero-label">Werk Leipzig · Fließband-Management</p>
+  <h1 class="hero-title">
+    Click<span>takt</span>
+  </h1>
+  <p class="hero-sub">
+    Automatische, faire Takteinteilung für Produktionsteams.
+    Wochenpläne mit einem Klick.
+  </p>
+  <div class="hero-actions" id="download">
+    <a href="https://github.com/DEIN-USERNAME/clicktakt/releases/latest/download/Clicktakt.exe"
+       class="btn-primary">
+      <span>↓ Download · Windows</span>
+    </a>
+    <a href="https://github.com/DEIN-USERNAME/clicktakt" class="btn-secondary">
+      GitHub →
+    </a>
+  </div>
+  <p class="version-badge">Version 1.0 · Windows 10/11 · Kostenlos</p>
+</section>
+
+<!-- Features -->
+<section class="features" id="features">
+  <p class="section-label reveal">Funktionen</p>
+  <h2 class="section-title reveal">Alles was du brauchst.<br><strong>Nichts was du nicht brauchst.</strong></h2>
+
+  <div class="features-grid">
+    <div class="feature-card reveal">
+      <span class="feature-num">01</span>
+      <h3 class="feature-title">Faire Rotation</h3>
+      <p class="feature-desc">Intelligenter Algorithmus verteilt Takte gleichmäßig über die Woche – und merkt sich die Verteilung für die nächste.</p>
+    </div>
+    <div class="feature-card reveal">
+      <span class="feature-num">02</span>
+      <h3 class="feature-title">Qualifikationen</h3>
+      <p class="feature-desc">Jeder Mitarbeiter nur auf Takten die er beherrscht. Einschränkungen werden automatisch berücksichtigt.</p>
+    </div>
+    <div class="feature-card reveal">
+      <span class="feature-num">03</span>
+      <h3 class="feature-title">Mehrfachbesetzung</h3>
+      <p class="feature-desc">Takte wie "Einlauf" können beliebig oft pro Tag besetzt werden – fair auf alle verteilt.</p>
+    </div>
+    <div class="feature-card reveal">
+      <span class="feature-num">04</span>
+      <h3 class="feature-title">Abwesenheiten</h3>
+      <p class="feature-desc">Urlaub und Krankheit mit einem Klick markieren. Der Plan passt sich automatisch an.</p>
+    </div>
+    <div class="feature-card reveal">
+      <span class="feature-num">05</span>
+      <h3 class="feature-title">Excel & Druck</h3>
+      <p class="feature-desc">Export als farbige Excel-Tabelle mit Kalenderwochen-Benennung. Druckansicht direkt im Browser.</p>
+    </div>
+    <div class="feature-card reveal">
+      <span class="feature-num">06</span>
+      <h3 class="feature-title">Feste Rotation</h3>
+      <p class="feature-desc">Alternativ zur automatischen Verteilung: feste Reihenfolge mit täglich verschobenem Startpunkt.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Installation -->
+<section class="requirements" id="install">
+  <div>
+    <p class="section-label reveal">Systemanforderungen</p>
+    <h2 class="section-title reveal" style="margin-bottom:0">Was du<br><strong>brauchst</strong></h2>
+    <ul class="req-list reveal">
+      <li>Windows 10 oder Windows 11</li>
+      <li>Python 3.10 oder neuer</li>
+      <li>Internetverbindung (nur für Installation)</li>
+      <li>Ca. 200 MB freier Speicher</li>
+    </ul>
+  </div>
+  <div>
+    <p class="section-label reveal">Einrichtung</p>
+    <h2 class="section-title reveal" style="margin-bottom:0">In <strong>4 Schritten</strong></h2>
+    <ol class="install-steps reveal">
+      <li class="install-step">
+        <span class="step-num">01</span>
+        <p class="step-text"><strong>Python installieren</strong><br>
+        python.org/downloads → neueste Version herunterladen und installieren</p>
+      </li>
+      <li class="install-step">
+        <span class="step-num">02</span>
+        <p class="step-text"><strong>Clicktakt herunterladen</strong><br>
+        Den Download-Button oben klicken und die ZIP-Datei speichern</p>
+      </li>
+      <li class="install-step">
+        <span class="step-num">03</span>
+        <p class="step-text"><strong>Entpacken</strong><br>
+        ZIP-Datei in einen Ordner entpacken, z.B. Dokumente\Clicktakt</p>
+      </li>
+      <li class="install-step">
+        <span class="step-num">04</span>
+        <p class="step-text"><strong>Starten</strong><br>
+        <strong>start.bat</strong> doppelklicken – fertig!</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p>© 2026 <span>Clicktakt</span> · Werk Leipzig</p>
+  <p>Gebaut für Produktionsteams</p>
+</footer>
+
+<script>
+  // Nav scroll effect
+  const nav = document.getElementById('nav');
+  window.addEventListener('scroll', () => {
+    nav.classList.toggle('scrolled', window.scrollY > 50);
+  });
+
+  // Scroll reveal
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry, i) => {
+      if (entry.isIntersecting) {
+        setTimeout(() => entry.target.classList.add('visible'), i * 80);
+      }
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+</script>
+</body>
+</html>
