@@ -255,7 +255,7 @@ class TeamDaten:
         self.rotations_modus = False
         self.rotations_reihenfolge = []
         self.rotations_start = {}
-        self.fixierungen = {}
+        self.fixierungen = {}  # {takt: [ma_primaer, ma_vertreter1, ...]}
 
     @property
     def alle_mas(self):
@@ -316,7 +316,11 @@ class TeamDaten:
         self.rotations_modus = data.get("rotations_modus", False)
         self.rotations_reihenfolge = data.get("rotations_reihenfolge", [])
         self.rotations_start = data.get("rotations_start", {})
-        self.fixierungen = data.get("fixierungen", {})
+        raw_fix = data.get("fixierungen", {})
+        # Migration: {takt: "ma"} -> {takt: ["ma"]}
+        self.fixierungen = {}
+        for t, v in raw_fix.items():
+            self.fixierungen[t] = v if isinstance(v, list) else [v]
         self.abwesenheiten = {k: set(v) for k, v in data.get("abwesenheiten", {}).items()}
         self.archiv = data.get("archiv", [])
         self.gesamt_zaehler = data.get("gesamt_zaehler", {})
@@ -328,32 +332,83 @@ class TeamDaten:
 
 def plan_rotation(daten, tage):
     reihenfolge = daten.rotations_reihenfolge or list(daten.alle_mas)
-    takte = daten.takte
+    # Ketten auflösen: erster verfügbarer MA in der Kette bekommt den Takt
+    def kette_auflösen(takt, tag):
+        kette = daten.fixierungen.get(takt, [])
+        if isinstance(kette, str):
+            kette = [kette]
+        abw = daten.abwesenheiten.get(tag, set())
+        for ma in kette:
+            if ma not in abw:
+                return ma
+        return None  # Alle abwesend -> Takt leer
+
+    fixierte_takte = set(daten.fixierungen.keys())
+
+    # Nur Takte die NICHT fixiert sind rotieren
+    rotierende_takte = [t for t in daten.takte if t not in fixierte_takte]
+
+    if not rotierende_takte:
+        rotierende_takte = daten.takte  # Fallback falls alle fixiert
+
+    # Startpunkt: entweder manuell gesetzt oder zufaellig (wechselt jede Woche)
     erster_ma = reihenfolge[0] if reihenfolge else None
-    start_takt = daten.rotations_start.get(erster_ma, takte[0] if takte else "")
-    start_idx = takte.index(start_takt) if start_takt in takte else 0
-    fixiert = {ma: t for t, ma in daten.fixierungen.items()}
+    if erster_ma and erster_ma in daten.rotations_start:
+        start_takt = daten.rotations_start[erster_ma]
+        start_idx = rotierende_takte.index(start_takt) if start_takt in rotierende_takte else 0
+    else:
+        # Zufaelliger Startpunkt – aendert sich bei jedem Aufruf
+        start_idx = random.randint(0, max(len(rotierende_takte) - 1, 0))
+
     plan = {}
     for ti, tag in enumerate(tage):
         plan[tag] = {}
         abw = daten.abwesenheiten.get(tag, set())
+
+        # Abwesende markieren
         for ma in daten.alle_mas:
             if ma in abw:
                 plan[tag][ma] = "ABWESEND"
-        for ma, takt in fixiert.items():
-            if ma not in abw:
+
+        # Fixierte Takte per Kette auflösen
+        fixiert_heute = {}  # {ma: takt} für diesen Tag
+        for takt in fixierte_takte:
+            ma = kette_auflösen(takt, tag)
+            if ma:
                 plan[tag][ma] = takt
-        offset = (start_idx + ti) % len(takte) if takte else 0
-        rotierende = [ma for ma in reihenfolge if ma not in abw and ma not in fixiert]
-        for i, ma in enumerate(rotierende):
-            plan[tag][ma] = takte[(offset + i) % len(takte)]
+                fixiert_heute[ma] = takt
+
+        # Offset pro Tag: jeden Tag einen Schritt weiter
+        offset = (start_idx + ti) % len(rotierende_takte)
+
+        # Nur nicht-fixierte, nicht-abwesende MAs rotieren
+        rotierende_mas = [ma for ma in reihenfolge
+                          if ma not in abw and ma not in fixiert_heute]
+
+        for i, ma in enumerate(rotierende_mas):
+            takt_idx = (offset + i) % len(rotierende_takte)
+            plan[tag][ma] = rotierende_takte[takt_idx]
+
     return plan
 
 
 def plan_erstellen(daten, tage):
-    fixiert_ma = {ma: t for t, ma in daten.fixierungen.items()}
+    # Ketten vorab für alle Tage auflösen
+    def kette_fuer_tag(takt, tag):
+        kette = daten.fixierungen.get(takt, [])
+        if isinstance(kette, str): kette = [kette]
+        abw = daten.abwesenheiten.get(tag, set())
+        for ma in kette:
+            if ma not in abw: return ma
+        return None
+
     fixierte_takte = set(daten.fixierungen.keys())
-    nicht_fix = [ma for ma in daten.alle_mas if ma not in fixiert_ma]
+    # Für gesamt-Logik: erster MA jeder Kette gilt als "primär fixiert"
+    fixiert_ma_gesamt = {}
+    for takt, kette in daten.fixierungen.items():
+        k = kette if isinstance(kette, list) else [kette]
+        if k: fixiert_ma_gesamt[k[0]] = takt
+    nicht_fix = [ma for ma in daten.alle_mas if ma not in fixiert_ma_gesamt]
 
     anwtage = {ma: sum(1 for t in tage if ma not in daten.abwesenheiten.get(t, set()))
                for ma in daten.alle_mas}
@@ -379,9 +434,12 @@ def plan_erstellen(daten, tage):
         verfuegbar = [m for m in daten.alle_mas if m not in abw]
         vergaben = defaultdict(int)
         for ma in verfuegbar:
-            if ma in fixiert_ma:
-                plan[tag][ma] = fixiert_ma[ma]
-                vergaben[fixiert_ma[ma]] += 1
+            # Fixierte Takte per Kette auflösen
+            for takt in fixierte_takte:
+                ma_fix = kette_fuer_tag(takt, tag)
+                if ma_fix and ma_fix not in plan[tag] and ma_fix in verfuegbar:
+                    plan[tag][ma_fix] = takt
+                    vergaben[takt] += 1
         nicht_zu = [ma for ma in verfuegbar if ma not in plan[tag]]
         random.shuffle(nicht_zu)
         while nicht_zu:
@@ -549,6 +607,7 @@ class StammdatenTab(QWidget):
         vl.addLayout(inp)
         self.lb_ma = QListWidget()
         self.lb_ma.setMinimumHeight(180)
+        self.lb_ma.keyPressEvent = lambda e: (self._ma_del() if e.key() == Qt.Key.Key_Delete else QListWidget.keyPressEvent(self.lb_ma, e))
         vl.addWidget(self.lb_ma)
         btn_del = danger_btn("Entfernen")
         btn_del.clicked.connect(self._ma_del)
@@ -576,6 +635,7 @@ class StammdatenTab(QWidget):
         self.lb_temp = QListWidget()
         self.lb_temp.setMaximumHeight(110)
         self.lb_temp.setStyleSheet(f"background:{P['bg4']};color:{P['gold']};")
+        self.lb_temp.keyPressEvent = lambda e: (self._temp_del() if e.key() == Qt.Key.Key_Delete else QListWidget.keyPressEvent(self.lb_temp, e))
         vl2.addWidget(self.lb_temp)
         lbl_hint = label("Qualifikationen werden beim Hinzufügen abgefragt", dim=True)
         vl2.addWidget(lbl_hint)
@@ -603,6 +663,7 @@ class StammdatenTab(QWidget):
         inp3.addWidget(btn_add3)
         vl3.addLayout(inp3)
         self.lb_takt = QListWidget()
+        self.lb_takt.keyPressEvent = lambda e: (self._takt_del() if e.key() == Qt.Key.Key_Delete else QListWidget.keyPressEvent(self.lb_takt, e))
         vl3.addWidget(self.lb_takt)
         btn_row = QHBoxLayout()
         btn_bes = sec_btn("Besetzung ändern")
@@ -615,24 +676,25 @@ class StammdatenTab(QWidget):
         main.addWidget(g_takte, 1)
 
         # ── Rechte Spalte: Fixierungen ──
-        g_fix = QGroupBox("Fixierungen  –  Takt immer derselbe MA")
+        g_fix = QGroupBox("Fixierungen  –  Vertreterkette")
         vl4 = QVBoxLayout(g_fix)
+
+        # Takt-Auswahl
         inp4 = QHBoxLayout()
         lbl_ft = label("Takt:")
         self.cb_fix_takt = QComboBox()
-        lbl_fm = label("MA:")
-        self.cb_fix_ma = QComboBox()
-        btn_fix = QPushButton("Setzen")
-        btn_fix.setFixedWidth(80)
+        btn_fix = QPushButton("Kette festlegen")
         btn_fix.clicked.connect(self._fix_setzen)
         inp4.addWidget(lbl_ft)
         inp4.addWidget(self.cb_fix_takt)
-        inp4.addWidget(lbl_fm)
-        inp4.addWidget(self.cb_fix_ma)
         inp4.addWidget(btn_fix)
         vl4.addLayout(inp4)
+
+        vl4.addWidget(label("Klicke auf einen Eintrag zum Bearbeiten", dim=True))
         self.lb_fix = QListWidget()
-        self.lb_fix.setMaximumHeight(120)
+        self.lb_fix.setMaximumHeight(140)
+        self.lb_fix.itemDoubleClicked.connect(self._fix_edit)
+        self.lb_fix.keyPressEvent = lambda e: (self._fix_del() if e.key() == Qt.Key.Key_Delete else QListWidget.keyPressEvent(self.lb_fix, e))
         vl4.addWidget(self.lb_fix)
         btn_fix_del = danger_btn("Fixierung entfernen")
         btn_fix_del.clicked.connect(self._fix_del)
@@ -670,11 +732,10 @@ class StammdatenTab(QWidget):
             self.lb_takt.addItem(txt)
         self.cb_fix_takt.clear()
         self.cb_fix_takt.addItems(self.daten.takte)
-        self.cb_fix_ma.clear()
-        self.cb_fix_ma.addItems(self.daten.alle_mas)
         self.lb_fix.clear()
-        for t, ma in self.daten.fixierungen.items():
-            self.lb_fix.addItem(f"{t}  →  {ma}")
+        for t, kette in self.daten.fixierungen.items():
+            kette_str = " → ".join(kette) if isinstance(kette, list) else kette
+            self.lb_fix.addItem(f"{t}  :  {kette_str}")
 
     def _ma_add(self):
         name = self.entry_ma.text().strip()
@@ -689,13 +750,10 @@ class StammdatenTab(QWidget):
         sel = self.lb_ma.currentItem()
         if not sel: return
         name = sel.text()
-        if QMessageBox.question(self, "Entfernen", f"'{name}' wirklich entfernen?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        ) == QMessageBox.StandardButton.Yes:
-            self.daten.mitarbeiter.remove(name)
-            self.daten.qualifikationen.pop(name, None)
-            self.refresh()
-            self.changed.emit()
+        self.daten.mitarbeiter.remove(name)
+        self.daten.qualifikationen.pop(name, None)
+        self.refresh()
+        self.changed.emit()
 
     def _temp_add(self):
         name = self.entry_temp.text().strip()
@@ -718,13 +776,10 @@ class StammdatenTab(QWidget):
         sel = self.lb_temp.currentItem()
         if not sel: return
         name = sel.text()
-        if QMessageBox.question(self, "Entfernen", f"Temporären MA '{name}' entfernen?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        ) == QMessageBox.StandardButton.Yes:
-            self.daten.temporaere_mas.remove(name)
-            self.daten.qualifikationen.pop(name, None)
-            self.refresh()
-            self.changed.emit()
+        self.daten.temporaere_mas.remove(name)
+        self.daten.qualifikationen.pop(name, None)
+        self.refresh()
+        self.changed.emit()
 
     def _takt_add(self):
         name = self.entry_takt.text().strip()
@@ -740,16 +795,13 @@ class StammdatenTab(QWidget):
         sel = self.lb_takt.currentItem()
         if not sel: return
         name = sel.text().split("  ×")[0].strip()
-        if QMessageBox.question(self, "Entfernen", f"Takt '{name}' wirklich entfernen?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        ) == QMessageBox.StandardButton.Yes:
-            self.daten.takte.remove(name)
-            self.daten.takt_besetzung.pop(name, None)
-            self.daten.fixierungen.pop(name, None)
-            for ma in self.daten.alle_mas:
-                self.daten.qualifikationen.get(ma, set()).discard(name)
-            self.refresh()
-            self.changed.emit()
+        self.daten.takte.remove(name)
+        self.daten.takt_besetzung.pop(name, None)
+        self.daten.fixierungen.pop(name, None)
+        for ma in self.daten.alle_mas:
+            self.daten.qualifikationen.get(ma, set()).discard(name)
+        self.refresh()
+        self.changed.emit()
 
     def _takt_bes_aendern(self):
         sel = self.lb_takt.currentItem()
@@ -758,17 +810,29 @@ class StammdatenTab(QWidget):
         self.daten.takt_besetzung[name] = self.spin_bes.value()
         self.refresh()
 
-    def _fix_setzen(self):
-        takt = self.cb_fix_takt.currentText()
-        ma = self.cb_fix_ma.currentText()
-        if takt and ma:
-            self.daten.fixierungen[takt] = ma
+    def _fix_setzen(self, takt_vorgabe=None):
+        takt = takt_vorgabe or self.cb_fix_takt.currentText()
+        if not takt:
+            return
+        bestehend = self.daten.fixierungen.get(takt, [])
+        if isinstance(bestehend, str):
+            bestehend = [bestehend]
+        dlg = FixKetteDialog(takt, self.daten.alle_mas, bestehend, self)
+        if dlg.exec():
+            if dlg.kette:
+                self.daten.fixierungen[takt] = dlg.kette
+            else:
+                self.daten.fixierungen.pop(takt, None)
             self.refresh()
+
+    def _fix_edit(self, item):
+        takt = item.text().split("  :")[0].strip()
+        self._fix_setzen(takt_vorgabe=takt)
 
     def _fix_del(self):
         sel = self.lb_fix.currentItem()
         if not sel: return
-        takt = sel.text().split("  →")[0].strip()
+        takt = sel.text().split("  :")[0].strip()
         self.daten.fixierungen.pop(takt, None)
         self.refresh()
 
@@ -782,6 +846,110 @@ class StammdatenTab(QWidget):
             self.daten.laden(pfad)
             self.refresh()
             self.changed.emit()
+
+
+class FixKetteDialog(QDialog):
+    """Dialog zum Festlegen einer Vertreterkette fuer einen Takt."""
+    def __init__(self, takt, alle_mas, bestehend, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Vertreterkette: {takt}")
+        self.setMinimumWidth(400)
+        self.kette = list(bestehend)
+        lay = QVBoxLayout(self)
+
+        lay.addWidget(label(f"Vertreterkette für: {takt}", bold=True, size=11))
+        lay.addWidget(label("Primaer -> Vertreter 1 -> ... | Alle abwesend = Takt leer", dim=True))
+        lay.addWidget(divider())
+
+        # Aktuelle Kette anzeigen
+        lay.addWidget(label("Aktuelle Kette:", bold=True))
+        self.lb_kette = QListWidget()
+        self.lb_kette.setMaximumHeight(140)
+        self._refresh_kette()
+        lay.addWidget(self.lb_kette)
+
+        # Buttons zum Bearbeiten
+        btn_row = QHBoxLayout()
+        btn_hoch = sec_btn("▲  Hoch")
+        btn_run  = sec_btn("▼  Runter")
+        btn_del  = danger_btn("Entfernen")
+        btn_hoch.setFixedWidth(90)
+        btn_run.setFixedWidth(90)
+        btn_hoch.clicked.connect(self._hoch)
+        btn_run.clicked.connect(self._runter)
+        btn_del.clicked.connect(self._entfernen)
+        btn_row.addWidget(btn_hoch)
+        btn_row.addWidget(btn_run)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_del)
+        lay.addLayout(btn_row)
+
+        lay.addWidget(divider())
+
+        # MA hinzufügen
+        lay.addWidget(label("MA zur Kette hinzufügen:", bold=True))
+        add_row = QHBoxLayout()
+        self.cb_add = QComboBox()
+        verfuegbar = [m for m in alle_mas if m not in self.kette]
+        self.cb_add.addItems(verfuegbar)
+        btn_add = QPushButton("+ Hinzufügen")
+        btn_add.clicked.connect(self._hinzufuegen)
+        add_row.addWidget(self.cb_add)
+        add_row.addWidget(btn_add)
+        lay.addLayout(add_row)
+
+        lay.addWidget(divider())
+
+        # Bestätigung
+        btn_ok_row = QHBoxLayout()
+        btn_abbruch = sec_btn("Abbrechen")
+        btn_ok = QPushButton("✓  Kette speichern")
+        btn_abbruch.clicked.connect(self.reject)
+        btn_ok.clicked.connect(self.accept)
+        btn_ok_row.addWidget(btn_abbruch)
+        btn_ok_row.addStretch()
+        btn_ok_row.addWidget(btn_ok)
+        lay.addLayout(btn_ok_row)
+
+        self._alle_mas = alle_mas
+
+    def _refresh_kette(self):
+        self.lb_kette.clear()
+        for i, ma in enumerate(self.kette):
+            prefix = "👑 Primär:     " if i == 0 else f"   Vertreter {i}: "
+            self.lb_kette.addItem(f"{prefix}{ma}")
+
+    def _refresh_cb(self):
+        self.cb_add.clear()
+        self.cb_add.addItems([m for m in self._alle_mas if m not in self.kette])
+
+    def _hinzufuegen(self):
+        ma = self.cb_add.currentText()
+        if ma and ma not in self.kette:
+            self.kette.append(ma)
+            self._refresh_kette()
+            self._refresh_cb()
+
+    def _entfernen(self):
+        i = self.lb_kette.currentRow()
+        if i >= 0:
+            self.kette.pop(i)
+            self._refresh_kette()
+            self._refresh_cb()
+
+    def _hoch(self):
+        i = self.lb_kette.currentRow()
+        if i > 0:
+            self.kette[i-1], self.kette[i] = self.kette[i], self.kette[i-1]
+            self._refresh_kette()
+            self.lb_kette.setCurrentRow(i-1)
+
+    def _runter(self):
+        i = self.lb_kette.currentRow()
+        if i >= 0 and i < len(self.kette)-1:
+            self.kette[i+1], self.kette[i] = self.kette[i], self.kette[i+1]
+            self._refresh_kette()
+            self.lb_kette.setCurrentRow(i+1)
 
 
 class TempQualiDialog(QDialog):
@@ -1421,18 +1589,30 @@ class PlanungTab(QWidget):
             m for m in self.daten.rotations_reihenfolge if m in self.daten.alle_mas]
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("Rotationsreihenfolge")
-        dlg.setMinimumSize(500, 460)
-        lay = QHBoxLayout(dlg)
+        dlg.setWindowTitle("Rotationsreihenfolge & Startposition")
+        dlg.setMinimumSize(560, 500)
+        outer = QVBoxLayout(dlg)
+        outer.setSpacing(12)
 
-        # Links: Reihenfolge
+        # Titel
+        outer.addWidget(label("Rotationsreihenfolge festlegen", bold=True, size=12))
+        outer.addWidget(divider())
+
+        # Haupt-Layout: Links + Rechts
+        lay = QHBoxLayout()
+        lay.setSpacing(20)
+
+        # ── Links: Reihenfolge ──
         left = QVBoxLayout()
         left.addWidget(label("Reihenfolge der MAs:", bold=True))
         left.addWidget(label("Bestimmt den Abstand zwischen MAs", dim=True))
         lb = QListWidget()
+        lb.setMinimumHeight(250)
         reihe = list(self.daten.rotations_reihenfolge)
         lb.addItems(reihe)
         left.addWidget(lb)
+
+        hl_mv = QHBoxLayout()
         btn_hoch = sec_btn("▲  Hoch")
         btn_run  = sec_btn("▼  Runter")
 
@@ -1452,45 +1632,81 @@ class PlanungTab(QWidget):
 
         btn_hoch.clicked.connect(hoch)
         btn_run.clicked.connect(runter)
-        hl_mv = QHBoxLayout()
         hl_mv.addWidget(btn_hoch)
         hl_mv.addWidget(btn_run)
         left.addLayout(hl_mv)
         lay.addLayout(left)
 
-        # Rechts: Startposition
+        # ── Rechts: Startposition (optional) ──
         right = QVBoxLayout()
-        right.addWidget(label("Startposition (1. Tag):", bold=True))
-        right.addWidget(label("Welcher Takt für welchen MA?", dim=True))
-        start_combos = {}
+        right.addWidget(label("Startposition (optional):", bold=True))
+        right.addWidget(label("Leer lassen = automatisch ab Takt 1", dim=True))
+        right.addSpacing(4)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"border: 1px solid {P['border']}; border-radius: 4px;")
         inner = QWidget()
+        inner.setStyleSheet(f"background: {P['bg4']};")
         g = QGridLayout(inner)
+        g.setContentsMargins(8, 8, 8, 8)
+        g.setSpacing(6)
+
+        # Header
+        hdr_ma   = QLabel("Mitarbeiter")
+        hdr_takt = QLabel("Starttakt")
+        hdr_ma.setStyleSheet(f"color:{P['text2']};font-weight:bold;font-size:9pt;")
+        hdr_takt.setStyleSheet(f"color:{P['text2']};font-weight:bold;font-size:9pt;")
+        g.addWidget(hdr_ma,   0, 0)
+        g.addWidget(hdr_takt, 0, 1)
+
+        start_combos = {}
         for i, ma in enumerate(self.daten.alle_mas):
-            g.addWidget(QLabel(ma), i, 0)
+            ma_lbl = QLabel(ma)
+            ma_lbl.setStyleSheet(f"color:{P['text']};padding: 2px 4px;")
             cb = QComboBox()
+            # Ersten Eintrag als "Automatisch" belassen
+            cb.addItem("— Automatisch —")
             cb.addItems(self.daten.takte)
+            # Gespeicherten Wert wiederherstellen
             if ma in self.daten.rotations_start and self.daten.rotations_start[ma] in self.daten.takte:
                 cb.setCurrentText(self.daten.rotations_start[ma])
-            g.addWidget(cb, i, 1)
+            else:
+                cb.setCurrentIndex(0)  # Automatisch
+            g.addWidget(ma_lbl, i+1, 0)
+            g.addWidget(cb,     i+1, 1)
             start_combos[ma] = cb
+
         scroll.setWidget(inner)
         right.addWidget(scroll)
         lay.addLayout(right)
+        outer.addLayout(lay)
 
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        outer.addWidget(divider())
+
+        # ── Bestätigungs-Buttons ──
+        btn_row = QHBoxLayout()
+        btn_abbrechen = sec_btn("Abbrechen")
+        btn_ok = QPushButton("✓  Reihenfolge speichern")
+
         def ok():
             self.daten.rotations_reihenfolge = list(reihe)
-            self.daten.rotations_start = {ma: cb.currentText() for ma, cb in start_combos.items()}
+            # Nur explizit gesetzte Starttakte speichern
+            self.daten.rotations_start = {}
+            for ma, cb in start_combos.items():
+                if cb.currentIndex() > 0:  # Index 0 = "Automatisch"
+                    self.daten.rotations_start[ma] = cb.currentText()
+            QMessageBox.information(dlg, "Gespeichert",
+                "Reihenfolge und Startposition wurden gespeichert.")
             dlg.accept()
-        btns.accepted.connect(ok)
-        btns.rejected.connect(dlg.reject)
 
-        outer = QVBoxLayout()
-        outer.addLayout(lay)
-        outer.addWidget(btns)
-        dlg.setLayout(outer)
+        btn_abbrechen.clicked.connect(dlg.reject)
+        btn_ok.clicked.connect(ok)
+        btn_row.addWidget(btn_abbrechen)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_ok)
+        outer.addLayout(btn_row)
+
         dlg.exec()
 
 
@@ -1528,6 +1744,7 @@ class ArchivTab(QWidget):
         self.lb = QListWidget()
         self.lb.setMaximumHeight(160)
         self.lb.currentRowChanged.connect(self._anzeigen)
+        self.lb.keyPressEvent = lambda e: (self._loeschen() if e.key() == Qt.Key.Key_Delete else QListWidget.keyPressEvent(self.lb, e))
         splitter.addWidget(self.lb)
 
         # Vorschau
