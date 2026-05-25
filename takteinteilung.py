@@ -46,8 +46,8 @@ P = {
     "bg3":       "#252525",
     "bg4":       "#2E2E2E",
     "border":    "#3A3A3A",
-    "red":       "#D5001C",
-    "red2":      "#FF1A33",
+    "red":       "#B12B28",
+    "red2":      "#D4403D",
     "white":     "#FFFFFF",
     "text":      "#F0F0F0",
     "text2":     "#AAAAAA",
@@ -541,7 +541,7 @@ def plan_erstellen(daten, tage):
             roh = target_roh[ma].get(takt, 0.0)
             hist_val = hist_last.get(ma, {}).get(takt, 0)
             # Erwarteter historischer Wert (wenn alles fair waere)
-            n_hist_wochen = max(len(hist_wochen), 1)
+            n_hist_wochen = max(len(daten.archiv), 1)
             erwartet = roh * n_hist_wochen
             # Anpassungsfaktor: wer mehr als erwartet hatte bekommt Abzug
             ueber = hist_val - erwartet
@@ -1403,7 +1403,7 @@ class AbwesenheitenTab(QWidget):
     def _style_abw_btn(self, btn, abw):
         if abw:
             btn.setStyleSheet(
-                f"background:#6B0010;color:#FF6B7A;border:1px solid #D5001C;"
+                f"background:#6B0010;color:#FF6B7A;border:1px solid #B12B28;"
                 f"border-radius:4px;font-weight:bold;font-size:9pt;")
         else:
             btn.setStyleSheet(
@@ -1761,13 +1761,13 @@ class PlanungTab(QWidget):
             f"<title>Clicktakt {datum}</title>"
             "<style>"
             "body{background:#111;color:#f0f0f0;font-family:'Segoe UI',Arial;margin:20px}"
-            "h1{font-size:20px;color:#D5001C;letter-spacing:2px}"
+            "h1{font-size:20px;color:#B12B28;letter-spacing:2px}"
             "p{color:#888;font-size:12px}"
             "table{border-collapse:collapse;width:100%;margin-top:16px}"
             "th,td{border:1px solid #333;padding:8px 12px;text-align:center;font-size:11px}"
             "th{background:#1C1C1C;color:#888;font-weight:bold}"
             ".ma{background:#2E2E2E;text-align:left;font-weight:bold;color:#F0F0F0;padding-left:12px}"
-            "button{background:#D5001C;color:white;border:none;padding:8px 20px;border-radius:4px;"
+            "button{background:#B12B28;color:white;border:none;padding:8px 20px;border-radius:4px;"
             "cursor:pointer;font-size:13px;margin-bottom:16px}"
             "@media print{button{display:none}body{background:white;color:black}"
             "th{background:#eee;color:black}.ma{background:#f5f5f5;color:black}}"
