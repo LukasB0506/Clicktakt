@@ -4,7 +4,7 @@ Takteinteilungs-Tool – PyQt6 Edition
 Porsche Leipzig | Dark Mode
 """
 
-import sys, os, json, random
+import sys, os, json, random, math
 from collections import defaultdict
 from datetime import date
 
@@ -35,6 +35,7 @@ else:
     _BASIS = os.path.dirname(os.path.abspath(__file__))
 
 SAVE_FILE = os.path.join(_BASIS, "team_config.json")
+CONFIG_VERSION = 3  # Erhöhen wenn sich das Dateiformat ändert
 
 WOCHENTAGE = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"]
 
@@ -259,7 +260,12 @@ class TeamDaten:
 
     @property
     def alle_mas(self):
-        return self.mitarbeiter + self.temporaere_mas
+        """Gibt alle MAs zurueck. Gecacht solange sich Listen nicht aendern."""
+        return list(self.mitarbeiter) + list(self.temporaere_mas)
+
+    def alle_mas_set(self):
+        """Als Set fuer schnelle Membership-Checks."""
+        return set(self.mitarbeiter) | set(self.temporaere_mas)
 
     def ist_temporaer(self, ma):
         return ma in self.temporaere_mas
@@ -287,6 +293,7 @@ class TeamDaten:
 
     def speichern(self, pfad=SAVE_FILE):
         data = {
+            "config_version": CONFIG_VERSION,
             "mitarbeiter": self.mitarbeiter,
             "temporaere_mas": self.temporaere_mas,
             "takte": self.takte,
@@ -305,8 +312,26 @@ class TeamDaten:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def laden(self, pfad=SAVE_FILE):
+        # Backup vor dem Laden erstellen
+        try:
+            import shutil
+            shutil.copy2(pfad, pfad + ".backup")
+        except Exception:
+            pass
         with open(pfad, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            raw = f.read().strip()
+        if not raw:
+            raise ValueError("Konfigurationsdatei ist leer.")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("Ungueltiges Dateiformat.")
+        # Versions-Check: bei aelterer Version trotzdem laden aber migrieren
+        datei_version = data.get("config_version", 1)
+        if datei_version > CONFIG_VERSION:
+            raise ValueError(
+                f"Config-Version {datei_version} ist neuer als "
+                f"diese Programmversion ({CONFIG_VERSION}). "
+                "Bitte Programm aktualisieren.")
         self.mitarbeiter = data.get("mitarbeiter", [])
         self.temporaere_mas = data.get("temporaere_mas", [])
         self.takte = data.get("takte", [])
@@ -317,13 +342,21 @@ class TeamDaten:
         self.rotations_reihenfolge = data.get("rotations_reihenfolge", [])
         self.rotations_start = data.get("rotations_start", {})
         raw_fix = data.get("fixierungen", {})
-        # Migration: {takt: "ma"} -> {takt: ["ma"]}
         self.fixierungen = {}
         for t, v in raw_fix.items():
             self.fixierungen[t] = v if isinstance(v, list) else [v]
         self.abwesenheiten = {k: set(v) for k, v in data.get("abwesenheiten", {}).items()}
         self.archiv = data.get("archiv", [])
         self.gesamt_zaehler = data.get("gesamt_zaehler", {})
+
+    def backup_wiederherstellen(self):
+        backup = SAVE_FILE + ".backup"
+        if os.path.exists(backup):
+            import shutil
+            shutil.copy2(backup, SAVE_FILE)
+            self.laden()
+            return True
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -354,11 +387,21 @@ def plan_rotation(daten, tage):
     # Startpunkt: entweder manuell gesetzt oder zufaellig (wechselt jede Woche)
     erster_ma = reihenfolge[0] if reihenfolge else None
     if erster_ma and erster_ma in daten.rotations_start:
+        # Manuell gesetzter Startpunkt hat Vorrang
         start_takt = daten.rotations_start[erster_ma]
         start_idx = rotierende_takte.index(start_takt) if start_takt in rotierende_takte else 0
     else:
-        # Zufaelliger Startpunkt – aendert sich bei jedem Aufruf
-        start_idx = random.randint(0, max(len(rotierende_takte) - 1, 0))
+        # Historisch informierter Startpunkt:
+        # Waehle den Takt den erster_ma zuletzt am wenigsten hatte
+        # Damit rotiert der Startpunkt sinnvoll von Woche zu Woche
+        if erster_ma and rotierende_takte:
+            hist_erster = daten.gesamt_zaehler.get(erster_ma, {})
+            # Takt mit niedrigstem historischem Zaehler = bevorzugter Start
+            start_takt = min(rotierende_takte,
+                key=lambda t: (hist_erster.get(t, 0), random.random()))
+            start_idx = rotierende_takte.index(start_takt)
+        else:
+            start_idx = random.randint(0, max(len(rotierende_takte) - 1, 0))
 
     plan = {}
     for ti, tag in enumerate(tage):
@@ -393,7 +436,20 @@ def plan_rotation(daten, tage):
 
 
 def plan_erstellen(daten, tage):
-    # Ketten vorab für alle Tage auflösen
+    """
+    Target-basierter Algorithmus.
+
+    Schritt 1: Berechne faires Wochenziel (target) fuer jeden MA/Takt.
+      - Basiert auf Qualifikationen und Anwesenheitstagen
+      - Wird durch historische Daten (letzte Wochen) angepasst:
+        wer zuletzt viel auf einem Takt war bekommt ein niedrigeres Ziel
+
+    Schritt 2: Tagesweise Zuteilung per "groesste Abweichung vom Ziel"
+      - Pro Tag: jeden Slot dem MA zuweisen dessen Ist-Wert am weitesten
+        unter seinem Ziel liegt (groesste Schulden)
+      - Qualifikationen werden hart geprueft
+      - Besetzungszahl wird pro Tag genau eingehalten
+    """
     def kette_fuer_tag(takt, tag):
         kette = daten.fixierungen.get(takt, [])
         if isinstance(kette, str): kette = [kette]
@@ -402,75 +458,209 @@ def plan_erstellen(daten, tage):
             if ma not in abw: return ma
         return None
 
-    fixierte_takte = set(daten.fixierungen.keys())
-    # Für gesamt-Logik: erster MA jeder Kette gilt als "primär fixiert"
-    fixiert_ma_gesamt = {}
-    for takt, kette in daten.fixierungen.items():
+    def ma_kann(ma, takt):
+        """Prueft ob MA diesen Takt ausfuehren kann.
+        Leere Qualifikations-Menge = MA kann alle Takte (z.B. neu angelegter MA).
+        Explizit gesetzte Qualifikationen = nur diese Takte erlaubt."""
+        quali = daten.qualifikationen.get(ma, set())
+        return not quali or takt in quali
+
+    fixierte_takte  = set(daten.fixierungen.keys())
+    rot_takte       = [t for t in daten.takte if t not in fixierte_takte]
+    n_tage          = len(tage)
+
+    # ── Schritt 1: Ziel-Matrix ──────────────────────────────────────
+    # Historische Belastung: direkt aus gesamt_zaehler lesen (einzige Wahrheitsquelle)
+    # gesamt_zaehler wird nur beim finalen Export/Archivieren aktualisiert
+    # -> kein Auseinanderlaufen moeglich
+    hist_last = {ma: dict(daten.gesamt_zaehler.get(ma, {}))
+                 for ma in daten.alle_mas}
+
+    # Anwesenheitstage pro MA diese Woche
+    anw = {ma: sum(1 for t in tage
+                   if ma not in daten.abwesenheiten.get(t, set()))
+           for ma in daten.alle_mas}
+
+    # Fixierte MAs bestimmen
+    fixiert_ma_gesamt = set()
+    for kette in daten.fixierungen.values():
         k = kette if isinstance(kette, list) else [kette]
-        if k: fixiert_ma_gesamt[k[0]] = takt
-    nicht_fix = [ma for ma in daten.alle_mas if ma not in fixiert_ma_gesamt]
+        if k: fixiert_ma_gesamt.add(k[0])
 
-    anwtage = {ma: sum(1 for t in tage if ma not in daten.abwesenheiten.get(t, set()))
-               for ma in daten.alle_mas}
-    avg = sum(len([m for m in nicht_fix if m not in daten.abwesenheiten.get(t, set())])
-              for t in tage) / max(len(tage), 1)
+    rot_mas = [m for m in daten.alle_mas if m not in fixiert_ma_gesamt]
 
-    def soll(ma, takt):
-        return daten.get_besetzung(takt) * anwtage[ma] / avg if avg else 0
+    # Verfuegbare (nicht-fixierte, anwesende) MAs pro Tag
+    verf_pro_tag = {
+        tag: [m for m in rot_mas
+              if m not in daten.abwesenheiten.get(tag, set())]
+        for tag in tage
+    }
 
-    wz = {ma: defaultdict(int, daten.gesamt_zaehler_fuer_ma(ma)) for ma in daten.alle_mas}
+    # Gesamt-Slots pro Takt ueber die Woche
+    slots = {t: daten.get_besetzung(t) * n_tage for t in rot_takte}
+
+    # Qualifizierte MAs pro Takt (unter den rot_mas)
+    quali_mas = {t: [m for m in rot_mas if ma_kann(m, t)] for t in rot_takte}
+
+    # Rohes Ziel: slots / anzahl_qualifizierter_mas * anwesenheitstage_ma
+    # = proportionaler Anteil den dieser MA an diesem Takt haben sollte
+    target_roh = {}
+    for ma in rot_mas:
+        target_roh[ma] = {}
+        for takt in rot_takte:
+            qmas = [m for m in quali_mas[takt] if anw[m] > 0]
+            if not qmas or ma not in qmas:
+                target_roh[ma][takt] = 0.0
+                continue
+            # Proportionaler Anteil basierend auf Anwesenheitstagen
+            gesamt_anw = sum(anw[m] for m in qmas)
+            target_roh[ma][takt] = slots[takt] * anw[ma] / max(gesamt_anw, 1)
+
+    # Ueberhang-Ziel
+    plaetze_pro_tag = {
+        tag: sum(daten.get_besetzung(t) for t in rot_takte)
+        for tag in tage
+    }
+    uh_slots = sum(
+        max(0, len(verf_pro_tag[tag]) - plaetze_pro_tag[tag])
+        for tag in tage
+    )
+    for ma in rot_mas:
+        if anw[ma] > 0:
+            gesamt_anw = sum(anw[m] for m in rot_mas if anw[m] > 0)
+            target_roh[ma]["UEBERHANG"] = uh_slots * anw[ma] / max(gesamt_anw, 1)
+        else:
+            target_roh[ma]["UEBERHANG"] = 0.0
+
+    # Historische Anpassung: wer in letzten Wochen viel hatte bekommt
+    # einen Abzug proportional zur Ueberbelastung
+    target = {}
+    for ma in rot_mas:
+        target[ma] = {}
+        for takt in rot_takte + ["UEBERHANG"]:
+            roh = target_roh[ma].get(takt, 0.0)
+            hist_val = hist_last.get(ma, {}).get(takt, 0)
+            # Erwarteter historischer Wert (wenn alles fair waere)
+            n_hist_wochen = max(len(hist_wochen), 1)
+            erwartet = roh * n_hist_wochen
+            # Anpassungsfaktor: wer mehr als erwartet hatte bekommt Abzug
+            ueber = hist_val - erwartet
+            anpassung = ueber * 0.3  # 30% Anpassung pro Woche
+            target[ma][takt] = max(0.0, roh - anpassung)
+
+    # ── Schritt 2: Tagesweise Zuteilung ─────────────────────────────
+    # Ist-Zaehler: wie oft hatte MA diesen Takt DIESE Woche
+    ist = {ma: defaultdict(float) for ma in rot_mas}
 
     def schulden(ma, takt):
-        n = max(len(daten.archiv), 1)
-        return soll(ma, takt) * n - wz[ma][takt]
+        """Wie weit ist MA unter seinem Ziel? Groesser = bevorzugter."""
+        return target[ma].get(takt, 0.0) - ist[ma][takt]
 
-    plan = {}
+    plan = {tag: {} for tag in tage}
+
     for tag in tage:
-        plan[tag] = {}
         abw = daten.abwesenheiten.get(tag, set())
+
+        # Abwesende markieren
         for ma in daten.alle_mas:
             if ma in abw:
                 plan[tag][ma] = "ABWESEND"
-        verfuegbar = [m for m in daten.alle_mas if m not in abw]
-        vergaben = defaultdict(int)
-        for ma in verfuegbar:
-            # Fixierte Takte per Kette auflösen
-            for takt in fixierte_takte:
-                ma_fix = kette_fuer_tag(takt, tag)
-                if ma_fix and ma_fix not in plan[tag] and ma_fix in verfuegbar:
-                    plan[tag][ma_fix] = takt
-                    vergaben[takt] += 1
-        nicht_zu = [ma for ma in verfuegbar if ma not in plan[tag]]
-        random.shuffle(nicht_zu)
-        while nicht_zu:
-            paare = []
-            ohne = []
-            for ma in nicht_zu:
-                quali = daten.qualifikationen.get(ma, set())
-                kann = set(daten.takte) if not quali else quali
-                frei = [t for t in daten.takte if t in kann and t not in fixierte_takte
-                        and vergaben[t] < daten.get_besetzung(t)]
-                alle = [t for t in daten.takte if t in kann and t not in fixierte_takte]
-                kand = frei if frei else alle
-                if not kand:
-                    ohne.append(ma)
-                    continue
-                bt = max(kand, key=lambda t: (schulden(ma, t), random.random()))
-                paare.append((ma, bt, schulden(ma, bt)))
-            for ma in ohne:
-                plan[tag][ma] = None
-                nicht_zu.remove(ma)
-            if not paare:
-                break
-            mx = max(s for _, _, s in paare)
-            gleich = [(m, t) for m, t, s in paare if abs(s - mx) < 0.001]
-            ma, takt = random.choice(gleich)
-            plan[tag][ma] = takt
-            wz[ma][takt] += 1
-            vergaben[takt] += 1
-            nicht_zu.remove(ma)
-    return plan
 
+        # Fixierte Takte per Kette besetzen
+        fixiert_heute = {}
+        for takt in fixierte_takte:
+            ma = kette_fuer_tag(takt, tag)
+            if ma and ma not in abw:
+                plan[tag][ma] = takt
+                fixiert_heute[ma] = takt
+
+        # Verfuegbare rotierende MAs heute
+        verf_heute = [m for m in rot_mas if m not in abw and m not in fixiert_heute]
+
+        # Taktplaetze und Ueberhang berechnen
+        plaetze = sum(daten.get_besetzung(t) for t in rot_takte)
+        n_verf  = len(verf_heute)
+        n_uh    = max(0, n_verf - plaetze)
+
+        # ── Takt-Zuteilung ZUERST (oberste Prioritaet) ─────────────────
+        # Erst alle Taktplaetze besetzen, dann Ueberhang vergeben
+        takt_vergaben = defaultdict(int)
+
+        # MAs mit wenigsten Qualifikationen zuerst einteilen
+        nicht_zu = sorted(verf_heute,
+            key=lambda m: (sum(1 for t in rot_takte if ma_kann(m, t)), random.random()))
+
+        zugewiesen = set()
+
+        while nicht_zu:
+            # Pruefe ob noch Taktplaetze frei sind
+            noch_frei = any(takt_vergaben[t] < daten.get_besetzung(t) for t in rot_takte)
+
+            if not noch_frei:
+                # Alle Taktplaetze besetzt -> restliche MAs bekommen Ueberhang
+                for ma in nicht_zu:
+                    plan[tag][ma] = "UEBERHANG"
+                    ist[ma]["UEBERHANG"] += 1
+                break
+
+            # Finde bestes MA-Takt-Paar mit groessten Schulden
+            bestes_paar  = None
+            beste_schuld = -999999
+
+            for ma in nicht_zu:
+                frei = [t for t in rot_takte
+                        if ma_kann(ma, t)
+                        and takt_vergaben[t] < daten.get_besetzung(t)]
+                if not frei:
+                    continue
+                bester_takt = max(frei, key=lambda t: (schulden(ma, t), random.random()))
+                s = schulden(ma, bester_takt)
+                if s > beste_schuld:
+                    beste_schuld = s
+                    bestes_paar  = (ma, bester_takt)
+
+            if bestes_paar is None:
+                # Kein MA mehr qualifiziert fuer freie Takte
+                # -> Forciere Besetzung: nimm irgendeinen qualifizierten MA
+                for takt in rot_takte:
+                    while takt_vergaben[takt] < daten.get_besetzung(takt):
+                        kandidaten = [m for m in nicht_zu if ma_kann(m, takt)]
+                        if not kandidaten:
+                            break  # wirklich niemand qualifiziert
+                        ma = min(kandidaten,
+                            key=lambda m: (ist[m][takt], hist_last.get(m, {}).get(takt, 0), random.random()))
+                        plan[tag][ma] = takt
+                        ist[ma][takt] += 1
+                        takt_vergaben[takt] += 1
+                        nicht_zu.remove(ma)
+                # Verbleibende -> Ueberhang
+                for ma in nicht_zu:
+                    plan[tag][ma] = "UEBERHANG"
+                    ist[ma]["UEBERHANG"] += 1
+                break
+
+            ma, takt = bestes_paar
+            plan[tag][ma] = takt
+            ist[ma][takt] += 1
+            takt_vergaben[takt] += 1
+            nicht_zu.remove(ma)
+
+        # Sicherheits-Check: fehlende Taktplaetze auffuellen
+        for takt in rot_takte:
+            while takt_vergaben[takt] < daten.get_besetzung(takt):
+                # Suche MA der noch keinen Takt hat und qualifiziert ist
+                kandidaten = [m for m in verf_heute
+                              if plan[tag].get(m) in ("UEBERHANG", None)
+                              and ma_kann(m, takt)]
+                if not kandidaten:
+                    break
+                ma = min(kandidaten,
+                    key=lambda m: (ist[m][takt], hist_last.get(m, {}).get(takt, 0), random.random()))
+                plan[tag][ma] = takt
+                ist[ma][takt] += 1
+                takt_vergaben[takt] += 1
+
+    return plan
 
 # ═══════════════════════════════════════════════════════════════
 #  UI Helper Widgets
@@ -739,7 +929,7 @@ class StammdatenTab(QWidget):
 
     def _ma_add(self):
         name = self.entry_ma.text().strip()
-        if name and name not in self.daten.alle_mas:
+        if name and name not in self.daten.alle_mas_set():
             self.daten.mitarbeiter.append(name)
             self.daten.qualifikationen[name] = set()
             self.entry_ma.clear()
@@ -758,7 +948,7 @@ class StammdatenTab(QWidget):
     def _temp_add(self):
         name = self.entry_temp.text().strip()
         if not name: return
-        if name in self.daten.alle_mas:
+        if name in self.daten.alle_mas_set():
             QMessageBox.warning(self, "Bereits vorhanden", f"'{name}' existiert bereits.")
             return
         self.entry_temp.clear()
@@ -1000,6 +1190,10 @@ class QualifikationenTab(QWidget):
         top = QHBoxLayout()
         top.addWidget(label("Haken = MA kann diesen Takt ausführen", bold=True))
         top.addStretch()
+        hinweis = QLabel("ℹ  Keine Haken = kann alle Takte")
+        hinweis.setStyleSheet(f"color:{P['gold']};font-size:9pt;padding:4px 8px;"
+                               f"background:{P['bg4']};border-radius:4px;")
+        top.addWidget(hinweis)
         btn_alle = QPushButton("Alle für alle Takte qualifizieren")
         btn_alle.clicked.connect(self._alle_quali)
         top.addWidget(btn_alle)
@@ -1336,7 +1530,7 @@ class PlanungTab(QWidget):
             self._letzter_plan = plan_rotation(self.daten, tage)
         else:
             self._letzter_plan = plan_erstellen(self.daten, tage)
-        self.daten.gesamt_zaehler_aktualisieren(self._letzter_plan)
+        # gesamt_zaehler wird NICHT hier aktualisiert – nur beim finalen Export/Archivieren
         self._vorschau_zeigen(tage)
 
     def _plan_neu(self):
@@ -1376,6 +1570,11 @@ class PlanungTab(QWidget):
                     itm = QTableWidgetItem("Abwesend")
                     itm.setBackground(QColor("#4A0A0A"))
                     itm.setForeground(QColor("#FF6B6B"))
+                elif eintrag == "UEBERHANG":
+                    itm = QTableWidgetItem("Überhang")
+                    itm.setBackground(QColor("#2A2A1A"))
+                    itm.setForeground(QColor("#C9A84C"))
+                    itm.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
                 elif not eintrag:
                     itm = QTableWidgetItem("—")
                     itm.setBackground(QColor(P['bg3']))
@@ -1464,6 +1663,7 @@ class PlanungTab(QWidget):
         if pfad:
             tage = self._aktive_tage()
             self._excel_schreiben(pfad, tage)
+            self.daten.gesamt_zaehler_aktualisieren(self._letzter_plan)
             self._archiv_auto(datum, tage)
             QMessageBox.information(self, "Gespeichert", f"Plan als {kw_str} gespeichert:\n{pfad}")
 
@@ -1497,6 +1697,8 @@ class PlanungTab(QWidget):
                 eintrag = self._letzter_plan.get(tag, {}).get(ma)
                 if eintrag == "ABWESEND":
                     z(row, ti+2, "Abwesend", bg="4A0A0A", fg="FF6B6B")
+                elif eintrag == "UEBERHANG":
+                    z(row, ti+2, "Überhang", bg="2A2A1A", fg="C9A84C")
                 elif not eintrag:
                     z(row, ti+2, "—", bg="252525", fg="666666")
                 else:
@@ -1513,6 +1715,9 @@ class PlanungTab(QWidget):
             "datum": datum, "tage": tage,
             "plan": plan_ser,
             "mitarbeiter": list(self.daten.alle_mas),
+            "zaehler_snapshot": {
+                ma: dict(z) for ma, z in self.daten.gesamt_zaehler.items()
+            },
         })
         self.daten.archiv = self.daten.archiv[:8]
 
@@ -1542,6 +1747,8 @@ class PlanungTab(QWidget):
                 e = self._letzter_plan.get(tag, {}).get(ma)
                 if e == "ABWESEND":
                     zellen += "<td style='background:#4A0A0A;color:#FF6B6B'>Abwesend</td>"
+                elif e == "UEBERHANG":
+                    zellen += "<td style='background:#2A2A1A;color:#C9A84C;font-weight:bold'>Überhang</td>"
                 elif not e:
                     zellen += "<td style='background:#252525;color:#666'>—</td>"
                 else:
@@ -1586,7 +1793,7 @@ class PlanungTab(QWidget):
             if ma not in self.daten.rotations_reihenfolge:
                 self.daten.rotations_reihenfolge.append(ma)
         self.daten.rotations_reihenfolge = [
-            m for m in self.daten.rotations_reihenfolge if m in self.daten.alle_mas]
+            m for m in self.daten.rotations_reihenfolge if m in self.daten.alle_mas_set()]
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Rotationsreihenfolge & Startposition")
@@ -1715,9 +1922,10 @@ class PlanungTab(QWidget):
 # ═══════════════════════════════════════════════════════════════
 
 class ArchivTab(QWidget):
-    def __init__(self, daten):
+    def __init__(self, daten, planung_tab=None):
         super().__init__()
         self.daten = daten
+        self.planung_tab = planung_tab  # Referenz auf PlanungTab fuer letzter_plan
         self._build()
 
     def _build(self):
@@ -1731,6 +1939,7 @@ class ArchivTab(QWidget):
         btn_ges = sec_btn("Gesamtverteilung anzeigen")
         btn_ges.clicked.connect(self._gesamtverteilung)
         btn_arc = QPushButton("Aktuellen Plan archivieren")
+        btn_arc.clicked.connect(self._manuell_archivieren)
         btn_del = danger_btn("Ausgewählten löschen")
         btn_del.clicked.connect(self._loeschen)
         top.addWidget(btn_ges)
@@ -1759,6 +1968,49 @@ class ArchivTab(QWidget):
         lay.addWidget(splitter, 1)
         self.refresh()
 
+    def set_planung_tab(self, tab):
+        self.planung_tab = tab
+
+    def _manuell_archivieren(self):
+        if not self.planung_tab or not self.planung_tab._letzter_plan:
+            QMessageBox.warning(self, "Kein Plan",
+                "Bitte zuerst einen Plan in Tab 'Planung & Export' erstellen.")
+            return
+        heute = date.today()
+        naechste_kw = heute.isocalendar()[1] + 1
+        jahr = heute.isocalendar()[0]
+        if naechste_kw > 52:
+            max_kw = date(heute.year, 12, 28).isocalendar()[1]
+            if naechste_kw > max_kw:
+                naechste_kw = 1
+                jahr += 1
+        kw_str = f"{jahr}_KW{naechste_kw:02d}"
+        tage = self.planung_tab._aktive_tage()
+        plan_ser = {tag: dict(mas) for tag, mas in self.planung_tab._letzter_plan.items()}
+        if any(e.get("datum") == kw_str for e in self.daten.archiv):
+            if QMessageBox.question(self, "Bereits vorhanden",
+                f"{kw_str} ist bereits im Archiv. Ersetzen?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            self.daten.archiv = [e for e in self.daten.archiv if e.get("datum") != kw_str]
+        eintrag = {
+            "datum": kw_str,
+            "tage": tage,
+            "plan": plan_ser,
+            "mitarbeiter": list(self.daten.alle_mas),
+            "zaehler_snapshot": {
+                ma: dict(z) for ma, z in self.daten.gesamt_zaehler.items()
+            },
+        }
+        self.daten.archiv.insert(0, eintrag)
+        self.daten.archiv = self.daten.archiv[:8]
+        # Gesamtzaehler nur einmal pro Woche aktualisieren
+        if self.planung_tab and self.planung_tab._letzter_plan:
+            self.daten.gesamt_zaehler_aktualisieren(self.planung_tab._letzter_plan)
+        self.refresh()
+        QMessageBox.information(self, "Archiviert", f"Plan für {kw_str} wurde archiviert.")
+
     def refresh(self):
         self.lb.clear()
         for e in self.daten.archiv:
@@ -1771,6 +2023,10 @@ class ArchivTab(QWidget):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             ) == QMessageBox.StandardButton.Yes:
                 del self.daten.archiv[i]
+                # Wenn noch Eintraege vorhanden: gesamt_zaehler auf letzten Snapshot
+                if self.daten.archiv and "zaehler_snapshot" in self.daten.archiv[0]:
+                    snap = self.daten.archiv[0]["zaehler_snapshot"]
+                    self.daten.gesamt_zaehler = {ma: dict(z) for ma, z in snap.items()}
                 self.refresh()
                 self.tbl.clear()
 
@@ -1796,6 +2052,11 @@ class ArchivTab(QWidget):
                     itm = QTableWidgetItem("Abwesend")
                     itm.setBackground(QColor("#4A0A0A"))
                     itm.setForeground(QColor("#FF6B6B"))
+                elif val == "UEBERHANG":
+                    itm = QTableWidgetItem("Überhang")
+                    itm.setBackground(QColor("#2A2A1A"))
+                    itm.setForeground(QColor("#C9A84C"))
+                    itm.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
                 elif not val:
                     itm = QTableWidgetItem("—")
                     itm.setBackground(QColor(P['bg3']))
@@ -1876,8 +2137,26 @@ class MainWindow(QMainWindow):
         if os.path.exists(SAVE_FILE):
             try:
                 self.daten.laden()
-            except Exception:
-                pass
+                # Abwesenheiten pruefen: wenn letzte KW veraltet ist -> zuruecksetzen
+                self._abwesenheiten_pruefen()
+            except Exception as e:
+                backup = SAVE_FILE + ".backup"
+                hat_backup = os.path.exists(backup)
+                msg = (f"Konfiguration konnte nicht geladen werden:\n{e}\n\n"
+                       + ("Ein Backup wurde gefunden. Backup wiederherstellen?"
+                          if hat_backup else
+                          "Das Programm startet mit leeren Daten."))
+                if hat_backup:
+                    ans = QMessageBox.question(None, "Ladefehler", msg,
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                    if ans == QMessageBox.StandardButton.Yes:
+                        try:
+                            self.daten.backup_wiederherstellen()
+                        except Exception as e2:
+                            QMessageBox.warning(None, "Backup fehlgeschlagen",
+                                f"Backup konnte nicht geladen werden:\n{e2}")
+                else:
+                    QMessageBox.warning(None, "Ladefehler", msg)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -1905,7 +2184,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_plan,   "  Planung && Export  ")
         self.tabs.addTab(self.tab_archiv, "  Wochenverlauf  ")
 
+        self.tab_archiv.set_planung_tab(self.tab_plan)
         self.tab_stamm.changed.connect(self._on_changed)
+        # Abwesenheitstabelle nach Laden aktualisieren
+        self.tab_abw.refresh_tabelle()
 
     def _on_changed(self):
         self.tab_quali.refresh()
