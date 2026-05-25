@@ -37,7 +37,7 @@ else:
 SAVE_FILE = os.path.join(_BASIS, "team_config.json")
 CONFIG_VERSION = 3  # Erhöhen wenn sich das Dateiformat ändert
 
-WOCHENTAG = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"]
+WOCHENTAGE = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"]
 
 # ── Porsche Farbpalette ────────────────────────────────────────
 P = {
