@@ -13,8 +13,8 @@
     --bg2:     #141414;
     --bg3:     #1E1E1E;
     --bg4:     #252525;
-    --red:     #D5001C;
-    --red2:    #FF1A33;
+    --red:     #B12B28;
+    --red2:    #D4403D;
     --gold:    #C9A84C;
     --white:   #F5F5F0;
     --dim:     #666;
@@ -472,7 +472,7 @@
     <div class="feature-card reveal">
       <span class="feature-num">06</span>
       <h3 class="feature-title">Vertreterkette</h3>
-      <p class="feature-desc">Fixierte Takte (bspw. Teamsprecher) haben eine Vertreterkette – fällt der pimäre Part aus, übernimmt automatisch der Vertreter.</p>
+      <p class="feature-desc">Fixierte Takte (bspw. Teamsprecher) haben eine Vertreterkette – fällt der primäre Part aus, übernimmt automatisch der Vertreter.</p>
     </div>
   </div>
 </section>
@@ -485,7 +485,6 @@
   <h2 class="section-title reveal">Das <strong>Handbuch.</strong></h2>
 
   <div class="handbuch-grid">
-    <!-- Seitennavigation -->
     <nav class="hb-nav" id="hb-nav">
       <a href="#hb-stamm">Stammdaten</a>
       <a href="#hb-quali">Qualifikationen</a>
@@ -494,10 +493,8 @@
       <a href="#hb-archiv">Wochenverlauf</a>
     </nav>
 
-    <!-- Inhalt -->
     <div class="hb-content">
 
-      <!-- Tab 1: Stammdaten -->
       <div class="hb-section" id="hb-stamm">
         <h3 class="hb-section-title"><span>Tab 1</span>Stammdaten</h3>
         <p class="hb-intro">Hier legst du die Grunddaten deines Teams fest – Mitarbeiter, Takte und Fixierungen. Diese Einstellungen bleiben gespeichert und müssen nur einmalig eingerichtet werden.</p>
@@ -529,7 +526,6 @@
         </div>
       </div>
 
-      <!-- Tab 2: Qualifikationen -->
       <div class="hb-section" id="hb-quali">
         <h3 class="hb-section-title"><span>Tab 2</span>Qualifikationen</h3>
         <p class="hb-intro">Hier legst du fest, welche Mitarbeiter welche Takte ausführen können. Der Plan berücksichtigt diese Einschränkungen automatisch.</p>
@@ -549,7 +545,6 @@
         </div>
       </div>
 
-      <!-- Tab 3: Abwesenheiten -->
       <div class="hb-section" id="hb-abw">
         <h3 class="hb-section-title"><span>Tab 3</span>Abwesenheiten</h3>
         <p class="hb-intro">Trage hier wöchentlich ein, wer anwesend oder abwesend ist. Diese Angaben fließen direkt in die Planung ein.</p>
@@ -569,7 +564,6 @@
         </div>
       </div>
 
-      <!-- Tab 4: Planung -->
       <div class="hb-section" id="hb-planung">
         <h3 class="hb-section-title"><span>Tab 4</span>Planung & Export</h3>
         <p class="hb-intro">Das Herzstück von Clicktakt. Hier wird der Wochenplan erstellt, angezeigt und exportiert.</p>
@@ -605,7 +599,6 @@
         </div>
       </div>
 
-      <!-- Tab 5: Wochenverlauf -->
       <div class="hb-section" id="hb-archiv">
         <h3 class="hb-section-title"><span>Tab 5</span>Wochenverlauf</h3>
         <p class="hb-intro">Zeigt die letzten 8 gespeicherten Wochenpläne und die Gesamtverteilung aller Takte über alle Wochen.</p>
@@ -625,8 +618,8 @@
         </div>
       </div>
 
-    </div><!-- hb-content -->
-  </div><!-- handbuch-grid -->
+    </div>
+  </div>
 </section>
 
 <div class="full-divider"></div>
@@ -688,7 +681,6 @@
   }, { threshold: 0.1 });
   document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
 
-  // Handbuch Nav aktiv markieren
   const hbSections = document.querySelectorAll('.hb-section');
   const hbLinks = document.querySelectorAll('.hb-nav a');
   const hbObserver = new IntersectionObserver((entries) => {
